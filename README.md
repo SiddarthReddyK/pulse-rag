@@ -97,8 +97,6 @@ graph LR
 
 ---
 
-## Project Structure
-
 ## Features
 
 - **Multi-Format Upload** — Accepts PDF and image lab reports (JPG, PNG, TIFF, BMP, WEBP) up to 10 MB, with image text read by a Groq vision model, so no Tesseract install is needed.
@@ -111,6 +109,8 @@ graph LR
 - **Insurance Checker (UI prototype)** — Chat-style interface for asking coverage questions about an uploaded policy. Frontend only for now; backend integration is planned.
 
 ---
+
+## Project Structure
 
 ```text
 ├── backend/
