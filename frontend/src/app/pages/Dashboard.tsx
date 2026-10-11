@@ -17,6 +17,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { Navbar } from "../components/Navbar";
+import { FormattedText } from "../components/FormattedText";
 import { Link } from "react-router";
 import { toast } from "sonner";
 import { Toaster } from "../components/ui/sonner";
@@ -396,7 +397,7 @@ export function Dashboard() {
               </div>
               <div className="p-6">
                 {summary ? (
-                  <p className="text-[#0f172a] leading-relaxed whitespace-pre-line">{summary}</p>
+                  <FormattedText text={summary} />
                 ) : (
                   <p className="text-[#64748b] italic leading-relaxed">
                     Upload a lab report to get an AI-generated summary of your results.
@@ -416,9 +417,7 @@ export function Dashboard() {
               </div>
               <div className="p-6">
                 {preventiveGuidance ? (
-                  <p className="text-[#0f172a] leading-relaxed whitespace-pre-line">
-                    {preventiveGuidance}
-                  </p>
+                  <FormattedText text={preventiveGuidance} />
                 ) : (
                   <p className="text-[#64748b] italic leading-relaxed">
                     Upload a lab report to get personalized preventive guidance from AI.
