@@ -1,0 +1,25 @@
+services:
+  backend:
+    build: ./backend
+    env_file: ./backend/.env
+    environment:
+      # The browser reaches the API through the nginx proxy on port 8080
+      ALLOWED_ORIGINS: http://localhost:8080
+    volumes:
+      - embedding-cache:/models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+volumes:
+  embedding-cache:
