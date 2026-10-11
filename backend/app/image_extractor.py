@@ -2,7 +2,7 @@
 image_extractor.py
 -------------------
 Extracts lab report text from image files (JPG, PNG, TIFF, BMP, WEBP)
-using Groq's vision-capable LLM (llama-3.2-11b-vision-preview).
+using a Groq vision-capable LLM (model set by VISION_MODEL).
 
 No external OCR binary (Tesseract) required — runs entirely via Groq API.
 
@@ -14,15 +14,13 @@ Usage:
 
 import base64
 import logging
-import os
 
 from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
 
-logger = logging.getLogger(__name__)
+from app.config import get_settings
 
-# Vision model on Groq
-VISION_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
+logger = logging.getLogger(__name__)
 
 _EXTRACTION_PROMPT = """\
 This image is a medical lab report. Your task is to read and extract ALL visible text from it exactly as it appears.
@@ -34,17 +32,16 @@ If the image is blurry or partially unreadable, extract whatever is visible.
 
 
 def _load_vision_llm() -> ChatGroq:
-    api_key = os.getenv("GROQ_API_KEY", "").strip()
-    if not api_key:
+    settings = get_settings()
+    if not settings.groq_api_key:
         raise RuntimeError(
-            "GROQ_API_KEY is not set. "
-            "Get a free key at https://console.groq.com then run:\n"
-            "  Windows : set GROQ_API_KEY=gsk_..."
+            "GROQ_API_KEY is not set. Get a free key at "
+            "https://console.groq.com and add it to backend/.env"
         )
     return ChatGroq(
-        model=VISION_MODEL,
+        model=settings.vision_model,
         temperature=0.0,
-        api_key=api_key,
+        api_key=settings.groq_api_key,
     )
 
 

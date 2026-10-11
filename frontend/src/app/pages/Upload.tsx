@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useNavigate } from "react-router";
 import { Navbar } from "../components/Navbar";
+import { API_BASE } from "../config";
 
 type UploadedFile = {
   file: File;
@@ -38,7 +39,6 @@ const ACCEPTED_TYPES = [
   "image/webp",
 ];
 
-const API_BASE = ""; // Vite proxy forwards /api and /health to http://localhost:8000
 
 export function Upload() {
   const [files, setFiles] = useState<UploadedFile[]>([]);
@@ -302,7 +302,9 @@ export function Upload() {
 
             <div className="mt-4 flex items-center justify-center gap-2 text-sm text-[#64748b]">
               <Shield className="w-4 h-4 text-[#0d9488]" />
-              <span>Your report is processed securely and never stored</span>
+              <span>
+                Reports are not saved on our server. They are sent to an AI provider (Groq) for analysis, and results stay in this browser only.
+              </span>
             </div>
 
             <div className="mt-6 p-4 bg-[#7c3aed]/5 rounded-lg border border-[#7c3aed]/20">

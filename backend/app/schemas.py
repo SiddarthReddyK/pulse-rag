@@ -1,9 +1,9 @@
 """
-Pydantic schemas that strictly define the data contract for the
-Lab Report Intelligence Agent API.
+Pydantic schemas that define the data contract for the Pulse RAG API.
 
-⚠️ Do NOT modify the shape of LabParameter or LabReport —
-   the LLM is instructed to return exactly this structure.
+Note: LabParameter and LabReport mirror the JSON structure the extraction
+prompt asks the LLM to return. Change them together with the prompt in
+llm_service.py.
 """
 
 from typing import List, Literal
@@ -12,7 +12,9 @@ from pydantic import BaseModel, Field
 
 class TTSRequest(BaseModel):
     """Payload for generating Text-to-Speech audio."""
-    text: str = Field(..., description="The text to convert to speech")
+    text: str = Field(
+        ..., min_length=1, max_length=5000, description="The text to convert to speech"
+    )
     language: str = Field("English", description="The language of the text")
 
 class LabParameter(BaseModel):
@@ -94,18 +96,3 @@ class TrendAnalysisResponse(BaseModel):
     only_in_older: List[str] = Field(default_factory=list, description="Parameters only in the older report")
     only_in_newer: List[str] = Field(default_factory=list, description="Parameters only in the newer report")
     graph_base64: str | None = Field(None, description="Base64 encoded PNG of the trend graph")
-
-
-class MultiReportResponse(BaseModel):
-    """
-    Response from POST /api/v1/upload-and-compare.
-    Contains per-file analysis for every uploaded report (sorted oldest→newest),
-    plus a trend comparison between the oldest and newest report.
-    """
-    reports: List[AnalysisResponse] = Field(
-        ..., description="Individual analysis for each uploaded file, sorted oldest → newest"
-    )
-    trend: TrendAnalysisResponse = Field(
-        ..., description="Trend comparison between the oldest and newest report"
-    )
-

@@ -20,6 +20,7 @@ import { Navbar } from "../components/Navbar";
 import { Link } from "react-router";
 import { toast } from "sonner";
 import { Toaster } from "../components/ui/sonner";
+import { API_BASE } from "../config";
 
 // Matches backend LabParameter schema exactly
 type LabParameter = {
@@ -41,7 +42,6 @@ const defaultLabData: LabParameter[] = [
   { name: "Vitamin D", value: 22, unit: "ng/mL", reference_low: 30, reference_high: 100, status: "Low" },
 ];
 
-const API_BASE = ""; // Proxy handles /api
 
 export function Dashboard() {
   const [labData, setLabData] = useState<LabParameter[]>(defaultLabData);

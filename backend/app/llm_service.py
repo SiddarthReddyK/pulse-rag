@@ -3,7 +3,7 @@ LLM service layer — Lab Report Parameter Extraction.
 
 Responsibility:
   - Accept raw PDF text.
-  - Call Groq (llama-3.3-70b-versatile) to extract structured lab parameters.
+  - Call Groq (model set by LLM_MODEL) to extract structured lab parameters.
   - Return a validated LabReport Pydantic object.
 
 This is the EXTRACTION step only (PDF text → structured JSON).
@@ -12,12 +12,13 @@ The patient-friendly summary/guidance is handled separately by reasoning_layer.p
 
 import json
 import logging
-import os
+from functools import lru_cache
 from typing import Any
 
 from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
 
+from app.config import get_settings
 from app.schemas import LabReport
 
 logger = logging.getLogger(__name__)
@@ -57,21 +58,20 @@ Rules:
 
 
 # ---------------------------------------------------------------------------
-# Internal: load LLM (Groq) — initialised once at module level
+# Internal: load LLM (Groq) — created once and reused
 # ---------------------------------------------------------------------------
+@lru_cache(maxsize=1)
 def _load_llm() -> ChatGroq:
-    api_key = os.getenv("GROQ_API_KEY", "").strip()
-    if not api_key:
+    settings = get_settings()
+    if not settings.groq_api_key:
         raise RuntimeError(
-            "GROQ_API_KEY is not set. "
-            "Get a free key at https://console.groq.com then run:\n"
-            "  Windows : set GROQ_API_KEY=gsk_...\n"
-            "  macOS   : export GROQ_API_KEY=gsk_..."
+            "GROQ_API_KEY is not set. Get a free key at "
+            "https://console.groq.com and add it to backend/.env"
         )
     return ChatGroq(
-        model="llama-3.3-70b-versatile",
+        model=settings.llm_model,
         temperature=0.0,   # extraction — fully deterministic
-        api_key=api_key,
+        api_key=settings.groq_api_key,
     )
 
 

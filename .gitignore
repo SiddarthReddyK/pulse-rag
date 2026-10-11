@@ -1,37 +1,21 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-*.egg
 *.egg-info/
-dist/
-build/
-.eggs/
-
-# Virtual environments
 .venv/
 venv/
-env/
-ENV/
+.pytest_cache/
 
-# Environment variables
+# Environment variables (never commit secrets)
 .env
+.env.*
+!.env.example
 
-# IDE
+# Frontend
+node_modules/
+dist/
+
+# Editors / OS
 .vscode/
 .idea/
-*.swp
-*.swo
-
-# OS
 .DS_Store
-Thumbs.db
-
-# Logs
-*.log
-
-# pytest
-.pytest_cache/
-.coverage
-htmlcov/

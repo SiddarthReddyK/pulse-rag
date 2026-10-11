@@ -1,256 +1,248 @@
 """
-API router for the Lab Report Intelligence Agent.
+API router for Pulse RAG.
 
-Full pipeline for POST /api/v1/upload-report:
-  1. Validate upload (type + size)
-  2. Extract raw text from PDF       → pdf_extractor
-  3. Extract structured parameters   → llm_service (Groq)
-  4. Re-classify parameter statuses  → lab_report_analyzer
-  5. Generate patient-friendly AI    → reasoning_layer (Groq)
-  6. Return combined AnalysisResponse
+POST /api/v1/upload-report pipeline:
+  1. Validate the upload (type, size, language)
+  2. Extract raw text            -> pdf_extractor / image_extractor
+  3. Extract structured values   -> llm_service (Groq)
+  4. Classify High / Low / Normal -> lab_report_analyzer
+  5. Generate RAG-grounded insights -> reasoning_layer (Groq)
+  6. Return the combined AnalysisResponse
+
+POST /api/v1/analyze-trends runs steps 1-4 on two reports and compares them.
+The (slower) insight generation in step 5 is skipped there on purpose.
 """
 
+import io
 import logging
-import sys
 import os
+from functools import lru_cache
 from typing import Any
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
+from gtts import gTTS
 
+from app import schemas
+from app.config import SUPPORTED_LANGUAGES, get_settings
+from app.graph_generator import generate_trend_graph_base64
+from app.image_extractor import extract_text_from_image
+from app.lab_report_analyzer import analyze_trends, classify_report_statuses
 from app.llm_service import analyze_report_text
 from app.pdf_extractor import extract_text_from_pdf
-from app.image_extractor import extract_text_from_image
-from app.graph_generator import generate_trend_graph_base64
+from app.reasoning_layer import LabReportReasoningAgent
 from app.schemas import AnalysisResponse, TrendAnalysisResponse
-from app import schemas
-
-# lab_report_analyzer lives at the backend root (one level above app/)
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from lab_report_analyzer import classify_report_statuses, analyze_trends  # noqa: E402
-from reasoning_layer import LabReportReasoningAgent                        # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["Lab Report"])
 
-ALLOWED_CONTENT_TYPES = {
-    "application/pdf",
-    "application/octet-stream",
-    "image/jpeg", "image/jpg", "image/png",
-    "image/tiff", "image/bmp", "image/webp",
+IMAGE_MIME_BY_EXT = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".tiff": "image/tiff", ".tif": "image/tiff",
+    ".bmp": "image/bmp",
+    ".webp": "image/webp",
 }
+IMAGE_CONTENT_TYPES = set(IMAGE_MIME_BY_EXT.values()) | {"image/jpg"}
+PDF_MAGIC = b"%PDF"
 
-IMAGE_CONTENT_TYPES = {
-    "image/jpeg", "image/jpg", "image/png",
-    "image/tiff", "image/bmp", "image/webp",
-}
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}
+# ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
 
-MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+@lru_cache(maxsize=1)
+def _build_reasoning_agent() -> LabReportReasoningAgent:
+    return LabReportReasoningAgent()
 
-# Initialise reasoning agent once at startup
-try:
-    _reasoning_agent = LabReportReasoningAgent()
-    logger.info("LabReportReasoningAgent initialised successfully.")
-except RuntimeError as e:
-    logger.error("Could not initialise reasoning agent: %s", e)
-    _reasoning_agent = None
+
+def get_reasoning_agent() -> LabReportReasoningAgent:
+    """Create the reasoning agent on first use (tests override this)."""
+    try:
+        return _build_reasoning_agent()
+    except RuntimeError as exc:
+        logger.error("Reasoning agent unavailable: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI reasoning service unavailable. Check GROQ_API_KEY and server logs.",
+        ) from exc
+
+
+def validate_language(language: str = Form("English", description="Output language")) -> str:
+    if language not in SUPPORTED_LANGUAGES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported language '{language}'.",
+        )
+    return language
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _validate_upload(file: UploadFile) -> None:
-    filename = file.filename or ""
-    ext = os.path.splitext(filename.lower())[1]
-    if file.content_type not in ALLOWED_CONTENT_TYPES and ext not in IMAGE_EXTENSIONS and ext != ".pdf":
+def _extension(file: UploadFile) -> str:
+    return os.path.splitext((file.filename or "").lower())[1]
+
+
+def _is_image(file: UploadFile) -> bool:
+    return file.content_type in IMAGE_CONTENT_TYPES or _extension(file) in IMAGE_MIME_BY_EXT
+
+
+def _image_mime(file: UploadFile) -> str:
+    if file.content_type in IMAGE_CONTENT_TYPES:
+        return "image/jpeg" if file.content_type == "image/jpg" else file.content_type
+    return IMAGE_MIME_BY_EXT.get(_extension(file), "image/jpeg")
+
+
+async def _read_upload(file: UploadFile) -> tuple[bytes, bool, str]:
+    """Validate an upload and return (bytes, is_image, image_mime)."""
+    name = file.filename or "file"
+    is_image = _is_image(file)
+    is_pdf_hint = file.content_type == "application/pdf" or _extension(file) == ".pdf"
+
+    if not is_image and not is_pdf_hint:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail="Only PDF and image files (JPG, PNG, TIFF, BMP, WEBP) are accepted.",
         )
 
-
-def _is_image(file: UploadFile) -> bool:
-    ext = os.path.splitext((file.filename or "").lower())[1]
-    return file.content_type in IMAGE_CONTENT_TYPES or ext in IMAGE_EXTENSIONS
-
-
-def _get_image_mime(file: UploadFile) -> str:
-    if file.content_type in IMAGE_CONTENT_TYPES:
-        return file.content_type
-    ext = os.path.splitext((file.filename or "").lower())[1]
-    return {
-        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".tiff": "image/tiff", ".tif": "image/tiff",
-        ".bmp": "image/bmp",
-        ".webp": "image/webp",
-    }.get(ext, "image/jpeg")
-
-
-async def _run_pipeline(file: UploadFile, language: str = "English") -> dict[str, Any]:
-    """Run the full pipeline on a single file. Returns a plain dict."""
-    _validate_upload(file)
-
-    file_bytes = await file.read()
-    if not file_bytes:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail=f"File '{file.filename}' is empty.")
-    if len(file_bytes) > MAX_FILE_SIZE_BYTES:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                            detail=f"File '{file.filename}' exceeds 10 MB limit.")
-
-    # Extract text
-    try:
-        report_text = (
-            extract_text_from_image(file_bytes, mime_type=_get_image_mime(file))
-            if _is_image(file)
-            else extract_text_from_pdf(file_bytes)
+    limit = get_settings().max_file_size_bytes
+    data = await file.read(limit + 1)
+    if not data:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"File '{name}' is empty.")
+    if len(data) > limit:
+        raise HTTPException(
+            413,
+            detail=f"File '{name}' exceeds the {get_settings().max_file_size_mb} MB limit.",
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+    if not is_image and not data.startswith(PDF_MAGIC):
+        raise HTTPException(
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f"File '{name}' is not a valid PDF.",
+        )
+    return data, is_image, _image_mime(file) if is_image else ""
 
-    # LLM parameter extraction
+
+def _extract_and_classify(data: bytes, is_image: bool, mime: str) -> dict[str, Any]:
+    """Blocking: text extraction -> LLM parameter extraction -> classification."""
     try:
-        lab_report = analyze_report_text(report_text)
+        text = extract_text_from_image(data, mime_type=mime) if is_image else extract_text_from_pdf(data)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
-                            detail=f"LLM extraction failed: {exc}")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail=f"LLM service unavailable: {exc}")
+        logger.error("Text extraction failed: %s", exc)
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Text extraction failed.")
 
-    # Classify statuses
-    report_dict = classify_report_statuses(lab_report.model_dump())
-
-    # Reasoning insights
-    if _reasoning_agent is None:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail="AI reasoning service unavailable. Check GROQ_API_KEY.")
     try:
-        insights = _reasoning_agent.analyze(report_dict, language=language)
+        lab_report = analyze_report_text(text)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=f"LLM extraction failed: {exc}")
+    except RuntimeError as exc:
+        logger.error("LLM service unavailable: %s", exc)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="LLM service unavailable.")
+
+    return classify_report_statuses(lab_report.model_dump())
+
+
+def _full_pipeline(
+    data: bytes, is_image: bool, mime: str, language: str, agent: LabReportReasoningAgent
+) -> dict[str, Any]:
+    """Blocking: extraction + classification + RAG insights."""
+    report = _extract_and_classify(data, is_image, mime)
+    try:
+        insights = agent.analyze(report, language=language)
     except Exception as exc:
         logger.exception("Reasoning layer failed.")
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
-                            detail=f"AI reasoning failed: {exc}") from exc
-
-    return {**report_dict, **insights}
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, detail="AI reasoning failed. Please try again."
+        ) from exc
+    return {**report, **insights}
 
 
 # ---------------------------------------------------------------------------
-# POST /api/v1/upload-report  — single file analysis
+# POST /api/v1/upload-report — single report
 # ---------------------------------------------------------------------------
 
 @router.post(
     "/upload-report",
     response_model=AnalysisResponse,
-    status_code=status.HTTP_200_OK,
     summary="Upload a lab report and get full AI analysis",
     description=(
-        "Accepts a PDF or image lab report. Extracts text, identifies and classifies "
-        "lab parameters via AI, then generates a patient-friendly summary, "
-        "preventive guidance, and 3 doctor consultation questions."
+        "Accepts a PDF or image lab report. Extracts and classifies the lab "
+        "parameters, then generates a patient-friendly summary, preventive "
+        "guidance, and 3 questions to ask a doctor."
     ),
 )
 async def upload_report(
-    file: UploadFile = File(..., description="Lab report — PDF or image (JPG, PNG, TIFF, BMP, WEBP)"),
-    language: str = Form("English", description="Target language to output AI summary in")
+    file: UploadFile = File(..., description="Lab report — PDF or image"),
+    language: str = Depends(validate_language),
+    agent: LabReportReasoningAgent = Depends(get_reasoning_agent),
 ) -> AnalysisResponse:
-    result = await _run_pipeline(file, language)
-    logger.info("upload-report: processed report for '%s' in %s.", result.get("patient_name"), language)
+    data, is_image, mime = await _read_upload(file)
+    result = await run_in_threadpool(_full_pipeline, data, is_image, mime, language, agent)
+    logger.info("upload-report: analysed %d parameters (%s).", len(result["parameters"]), language)
     return AnalysisResponse(**result)
 
 
 # ---------------------------------------------------------------------------
-# POST /api/v1/analyze-trends  — two file pickers (works in Swagger UI)
+# POST /api/v1/analyze-trends — compare two reports
 # ---------------------------------------------------------------------------
 
 @router.post(
     "/analyze-trends",
     response_model=TrendAnalysisResponse,
-    status_code=status.HTTP_200_OK,
     summary="Upload 2 lab reports and get trend analysis",
     description=(
-        "Upload an older and a newer lab report (PDF or image). "
-        "Both are processed through the full AI pipeline, then compared "
-        "to produce per-parameter trend data: direction, absolute change, % change."
+        "Upload an older and a newer report. Both are extracted and classified, "
+        "then compared per parameter: direction, absolute change, % change."
     ),
 )
 async def analyze_trends_endpoint(
-    older_report: UploadFile = File(..., description="The OLDER lab report (PDF or image)"),
-    newer_report: UploadFile = File(..., description="The NEWER lab report (PDF or image)"),
-    language: str = Form("English", description="Target language to output AI summary in")
+    older_report: UploadFile = File(..., description="The OLDER lab report"),
+    newer_report: UploadFile = File(..., description="The NEWER lab report"),
+    language: str = Depends(validate_language),  # accepted for client compatibility
 ) -> TrendAnalysisResponse:
-    older_dict = await _run_pipeline(older_report, language)
-    newer_dict = await _run_pipeline(newer_report, language)
+    older_args = await _read_upload(older_report)
+    newer_args = await _read_upload(newer_report)
 
-    older = classify_report_statuses(older_dict)
-    newer = classify_report_statuses(newer_dict)
-    trend_dict = analyze_trends(older, newer)
+    older = await run_in_threadpool(_extract_and_classify, *older_args)
+    newer = await run_in_threadpool(_extract_and_classify, *newer_args)
 
-    # Generate graph from the structured trend array
-    graph_b64 = generate_trend_graph_base64(trend_dict.get("trends", []))
-    trend_dict["graph_base64"] = graph_b64
-
-    logger.info(
-        "analyze-trends: '%s' | %d params | '%s' → '%s'",
-        trend_dict.get("patient_name"),
-        len(trend_dict.get("trends", [])),
-        older.get("report_date"),
-        newer.get("report_date"),
+    trend = analyze_trends(older, newer)
+    trend["graph_base64"] = await run_in_threadpool(
+        generate_trend_graph_base64, trend.get("trends", [])
     )
-
-    return TrendAnalysisResponse(**trend_dict)
+    logger.info("analyze-trends: compared %d parameters.", len(trend.get("trends", [])))
+    return TrendAnalysisResponse(**trend)
 
 
 # ---------------------------------------------------------------------------
-# POST /api/v1/tts — Text-to-Speech generation
+# POST /api/v1/tts — text-to-speech
 # ---------------------------------------------------------------------------
-
-# Map descriptive languages to gTTS language codes
-_TTS_LANG_MAP = {
-    "English": "en",
-    "Hindi": "hi",
-    "Bengali": "bn",
-    "Telugu": "te",
-    "Marathi": "mr",
-    "Tamil": "ta",
-    "Urdu": "ur",
-    "Gujarati": "gu",
-    "Kannada": "kn",
-    "Malayalam": "ml",
-    # gTTS might not officially support Odia or Punjabi as well as others, 
-    # but we can fallback to 'hi' or closest if it fails, or just pass 'en'
-    "Odia": "hi", 
-    "Punjabi": "pa",
-}
 
 @router.post(
     "/tts",
-    summary="Generate Text-to-Speech audio for the summary",
-    description="Accepts text and a language string, returns an MP3 audio stream using gTTS.",
+    summary="Generate text-to-speech audio for the summary",
+    description="Accepts text and a language name, returns an MP3 audio stream (gTTS).",
 )
-async def generate_tts(request: schemas.TTSRequest):
-    from gtts import gTTS
-    import io
-    from fastapi.responses import StreamingResponse
+def generate_tts(request: schemas.TTSRequest) -> StreamingResponse:
+    # Plain `def`: FastAPI runs it in a worker thread, so gTTS's blocking
+    # network call does not stall the event loop.
+    lang_code = SUPPORTED_LANGUAGES.get(request.language)
+    if lang_code is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"Unsupported language '{request.language}'.")
 
-    target_lang = _TTS_LANG_MAP.get(request.language, "en")
-    
     try:
-        tts = gTTS(text=request.text, lang=target_lang, slow=False)
-        audio_fp = io.BytesIO()
-        tts.write_to_fp(audio_fp)
-        audio_fp.seek(0)
-        
-        return StreamingResponse(audio_fp, media_type="audio/mpeg")
+        audio = io.BytesIO()
+        gTTS(text=request.text, lang=lang_code, slow=False).write_to_fp(audio)
+        audio.seek(0)
     except Exception as exc:
         logger.error("TTS generation failed: %s", exc)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate audio: {exc}"
-        )
+            status.HTTP_502_BAD_GATEWAY, detail="Failed to generate audio. Please try again."
+        ) from exc
+
+    return StreamingResponse(audio, media_type="audio/mpeg")

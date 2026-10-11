@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Send, Sparkles, CheckCircle, Upload, FileText, X } from "lucide-react";
+import { Send, Sparkles, CheckCircle, Upload, FileText, X, AlertTriangle } from "lucide-react";
 import { Navbar } from "../components/Navbar";
 
 type Message = {
@@ -11,7 +11,7 @@ type Message = {
 const initialMessages: Message[] = [
   {
     type: "ai",
-    text: "Hello! I'm your AI Insurance Assistant. Upload your insurance policy document and ask me about coverage for specific procedures, tests, or medications.",
+    text: "Hello! This is a demo of the Insurance Assistant. Upload any file and try a question about lipid tests, statins, glucose, or vitamins to see how answers will look. Replies are sample text and are not read from your policy.",
   },
 ];
 
@@ -29,7 +29,7 @@ export function InsuranceChecker() {
         ...prev,
         {
           type: "ai",
-          text: `Great! I've received your policy document "${file.name}". Now you can ask me questions about your coverage.`,
+          text: `Selected "${file.name}". In this demo the file is not uploaded or read. Ask a question to see a sample answer.`,
         },
       ]);
     }
@@ -45,7 +45,10 @@ export function InsuranceChecker() {
 
     setTimeout(() => {
       const aiResponse = generateResponse(userMessage);
-      setMessages((prev) => [...prev, aiResponse]);
+      setMessages((prev) => [
+        ...prev,
+        { ...aiResponse, text: `Demo response: ${aiResponse.text}` },
+      ]);
       setIsTyping(false);
     }, 1500);
   };
@@ -113,6 +116,16 @@ export function InsuranceChecker() {
             Check Your Coverage
           </h1>
           <p className="text-[#64748b]">Upload your policy and ask what's covered</p>
+        </div>
+
+        {/* Demo notice: answers below are scripted, not generated from the policy */}
+        <div className="mb-6 flex items-start gap-2 p-3 bg-[#f59e0b]/10 border border-[#f59e0b]/30 rounded-lg">
+          <AlertTriangle className="w-4 h-4 text-[#b45309] flex-shrink-0 mt-0.5" />
+          <p className="text-sm text-[#92400e]">
+            <strong>Demo preview.</strong> This page shows a prototype of the
+            coverage assistant. Answers and policy clauses are sample text and
+            do not reflect any real insurance policy.
+          </p>
         </div>
 
         {/* Two Panel Layout */}

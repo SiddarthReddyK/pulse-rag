@@ -1,28 +1,26 @@
-# AI Health Insight Companion — Python Dependencies
+# Pulse RAG — backend dependencies
 # Install with: pip install -r requirements.txt
 
-# ── Web API / Server ─────────────────────────────────────────────────────────
+# -- Web API --
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
-python-multipart>=0.0.9     # required by FastAPI for file uploads
+python-multipart>=0.0.9
+pydantic>=2.7.0
+python-dotenv>=1.0.0
 
-# ── PDF Processing ───────────────────────────────────────────────────────────
+# -- Document processing --
 pdfplumber>=0.11.0
 
-# ── Data Validation ──────────────────────────────────────────────────────────
-pydantic>=2.7.0
-
-# ── LangChain core ───────────────────────────────────────────────────────────
+# -- LLM + RAG --
 langchain>=0.3.0
 langchain-core>=0.3.0
 langchain-community>=0.3.0
 langchain-text-splitters>=0.3.0
-
-# ── LLM Providers ────────────────────────────────────────────────────────────
-langchain-groq>=0.2.0          # Groq (free tier — llama-3.3-70b-versatile)
-
-# ── FAISS — vector store for RAG ─────────────────────────────────────────────
+langchain-groq>=0.2.0
 faiss-cpu>=1.8.0
+fastembed>=0.3.0          # real semantic embeddings (ONNX, no PyTorch needed)
 
-# ── Utility ──────────────────────────────────────────────────────────────────
-python-dotenv>=1.0.0           # load GROQ_API_KEY from .env file
+# -- Trend charts and audio --
+matplotlib>=3.8.0
+numpy>=1.26.0
+gTTS>=2.5.0

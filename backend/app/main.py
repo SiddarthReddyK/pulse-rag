@@ -1,7 +1,7 @@
 """
-Entry point for the AI Lab Report Intelligence Agent API.
+Entry point for the Pulse RAG API.
 
-Run locally:
+Run locally (from the backend/ directory):
     uvicorn app.main:app --reload
 
 Interactive docs:
@@ -9,14 +9,18 @@ Interactive docs:
 """
 
 import logging
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-load_dotenv(override=True)  # force load GROQ_API_KEY (and others) from .env on script reloads
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+load_dotenv()  # real environment variables take precedence over .env
 
-from app.router import router
+from fastapi import FastAPI  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
+from app.config import get_settings  # noqa: E402
+from app.router import _build_reasoning_agent, router  # noqa: E402
+from fastapi.concurrency import run_in_threadpool  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -26,43 +30,52 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-8s | %(name)s — %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+settings = get_settings()
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Warm up the RAG index and LLM client so the first request is fast."""
+    try:
+        await run_in_threadpool(_build_reasoning_agent)
+    except Exception as exc:  # the API still starts; endpoints return 503
+        logger.error("Reasoning agent warm-up failed: %s", exc)
+    yield
+
 
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
 app = FastAPI(
-    title="AI Lab Report Intelligence Agent",
+    title="Pulse RAG API",
     description=(
-        "Transforms raw lab report PDFs into structured, patient-friendly JSON "
-        "using AI-powered extraction and analysis."
+        "Turns lab report PDFs and images into structured data and "
+        "patient-friendly, RAG-grounded insights. Informational only — "
+        "not medical advice."
     ),
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # ---------------------------------------------------------------------------
-# CORS — allow all origins in development; restrict in production
+# CORS — only the origins listed in ALLOWED_ORIGINS may call the API
 # ---------------------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # 🔒 Replace with specific origins before going live
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=settings.allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
-# ---------------------------------------------------------------------------
-# Routers
-# ---------------------------------------------------------------------------
 app.include_router(router)
 
 
-# ---------------------------------------------------------------------------
-# Health check
-# ---------------------------------------------------------------------------
 @app.get("/health", tags=["Health"], summary="Service health check")
-async def health_check() -> dict:
+def health_check() -> dict:
     """Returns 200 OK if the service is running."""
-    return {"status": "ok", "service": "AI Lab Report Intelligence Agent"}
+    return {"status": "ok", "service": "pulse-rag-api", "env": settings.app_env}
