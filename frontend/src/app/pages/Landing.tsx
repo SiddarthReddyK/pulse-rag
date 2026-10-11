@@ -13,7 +13,7 @@ export function Landing() {
         <div className="relative max-w-7xl mx-auto px-6 py-24 text-center">
           <div className="inline-flex items-center gap-2 bg-white/20 backdrop-blur-sm border border-white/30 px-4 py-2 rounded-full mb-6">
             <Sparkles className="w-4 h-4 text-white" />
-            <span className="text-white text-sm font-medium">AI Powered Health Intelligence</span>
+            <span className="text-white text-sm font-medium">AI-Powered Lab Report Analysis</span>
           </div>
 
           <h1 className="text-5xl md:text-6xl font-bold text-white mb-6 leading-tight">
@@ -23,7 +23,7 @@ export function Landing() {
           </h1>
 
           <p className="text-xl text-white/95 mb-10 max-w-3xl mx-auto leading-relaxed">
-            AI that reads your blood work, explains what's wrong, and tells you what to do next.
+            AI that analyzes your lab reports, explains abnormal results, and helps you understand what to discuss with your doctor.
           </p>
 
           <Link
@@ -58,8 +58,7 @@ export function Landing() {
               Confused by your report?
             </h3>
             <p className="text-[#64748b] leading-relaxed">
-              We explain every value in simple language. No medical degree needed.
-              Understand what your numbers actually mean for your health.
+              We explain your lab values in simple language, so you can better understand what your results mean.
             </p>
           </div>
 
@@ -269,7 +268,7 @@ export function Landing() {
       <footer className="bg-white border-t border-[#e2e8f0] py-8">
         <div className="max-w-7xl mx-auto px-6 text-center">
           <p className="text-[#64748b] text-sm">
-            © 2026 AI Health Insight Companion. For informational purposes only.
+            © 2026 Pulse RAG. For informational purposes only.
             This is not medical advice. Always consult with healthcare professionals.
           </p>
         </div>
