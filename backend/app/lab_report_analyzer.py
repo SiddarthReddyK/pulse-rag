@@ -1,11 +1,12 @@
 """
-Lab Report Analyzer - Core Logic Layer
-AI Health Insight Companion
+Lab Report Analyzer - core logic layer (Pulse RAG).
 
-Provides pure, modular functions for:
-  - Classifying lab parameter statuses
+Pure, side-effect-free functions for:
+  - Classifying lab parameter statuses against their reference ranges
   - Computing trend analysis between two reports
 """
+
+import copy
 
 
 # ─────────────────────────────────────────────
@@ -30,7 +31,6 @@ def classify_report_statuses(report: dict) -> dict:
         KeyError:  If a required key is missing from a parameter entry.
         TypeError: If numeric fields are not comparable numbers.
     """
-    import copy
     classified = copy.deepcopy(report)
 
     for param in classified.get("parameters", []):
@@ -146,48 +146,3 @@ def analyze_trends(older_report: dict, newer_report: dict) -> dict:
         "only_in_older"    : only_in_older,
         "only_in_newer"    : only_in_newer,
     }
-
-
-# ─────────────────────────────────────────────
-# Quick smoke-test (remove in production)
-# ─────────────────────────────────────────────
-
-if __name__ == "__main__":
-    import json
-
-    sample_report_jan = {
-        "patient_name": "Akshay Sharma",
-        "report_date" : "2026-01-15",
-        "parameters"  : [
-            {"name": "Hemoglobin",   "value": 11.2, "unit": "g/dL",  "reference_low": 13.0, "reference_high": 17.0, "status": ""},
-            {"name": "Glucose",      "value": 95.0, "unit": "mg/dL", "reference_low": 70.0, "reference_high": 100.0,"status": ""},
-            {"name": "Cholesterol",  "value": 215.0,"unit": "mg/dL", "reference_low": 0.0,  "reference_high": 200.0,"status": ""},
-        ]
-    }
-
-    sample_report_feb = {
-        "patient_name": "Akshay Sharma",
-        "report_date" : "2026-02-20",
-        "parameters"  : [
-            {"name": "Hemoglobin",   "value": 12.8, "unit": "g/dL",  "reference_low": 13.0, "reference_high": 17.0, "status": ""},
-            {"name": "Glucose",      "value": 88.0, "unit": "mg/dL", "reference_low": 70.0, "reference_high": 100.0,"status": ""},
-            {"name": "Cholesterol",  "value": 185.0,"unit": "mg/dL", "reference_low": 0.0,  "reference_high": 200.0,"status": ""},
-            {"name": "Vitamin D",    "value": 18.0, "unit": "ng/mL", "reference_low": 20.0, "reference_high": 50.0, "status": ""},
-        ]
-    }
-
-    # Step 1 – classify statuses
-    classified_jan = classify_report_statuses(sample_report_jan)
-    classified_feb = classify_report_statuses(sample_report_feb)
-
-    print("=== Classified January Report ===")
-    print(json.dumps(classified_jan, indent=2))
-
-    print("\n=== Classified February Report ===")
-    print(json.dumps(classified_feb, indent=2))
-
-    # Step 2 – trend analysis
-    trends = analyze_trends(classified_jan, classified_feb)
-
-    print("\n=== Trend Analysis ===")
-    print(json.dumps(trends, indent=2))
