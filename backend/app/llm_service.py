@@ -33,21 +33,21 @@ Given raw text extracted from a patient lab report, return ONLY a valid JSON
 object conforming exactly to this schema — no markdown fences, no extra keys:
 
 {
-  "patient_name": "<string>",
-  "report_date": "<YYYY-MM-DD string>",
-  "parameters": [
-    {
-      "name": "<string>",
-      "value": <number>,
-      "unit": "<string>",
-      "reference_low": <number>,
-      "reference_high": <number>,
-      "status": "<High | Low | Normal>"
-    }
+  "patient_name":"<string>",
+  "report_date":"<YYYY-MM-DD>",
+  "parameters":[
+    ["<name>",<value>,"<unit>",<reference_low>,<reference_high>,"<High|Low|Normal>"]
   ]
 }
 
 Rules:
+- Return ONLY valid JSON.
+- Use compact JSON with no indentation or unnecessary spaces.
+- Each parameter MUST be represented as:
+  [name,value,unit,reference_low,reference_high,status]
+- Do not add any extra fields.
+- Use compact JSON on a single line with no spaces or indentation.
+- Return compact JSON with no unnecessary whitespace or formatting.
 - Extract EVERY lab parameter you can find in the text.
 - value, reference_low, reference_high MUST be numbers (not strings).
 - status must be exactly "High", "Low", or "Normal" based on comparing value to reference range.
@@ -70,7 +70,8 @@ def _load_llm() -> ChatGroq:
         )
     return ChatGroq(
         model=settings.llm_model,
-        temperature=0.0,   # extraction — fully deterministic
+        temperature=0.0,
+        max_tokens=1000,  # extraction — fully deterministic
         api_key=settings.groq_api_key,
     )
 
@@ -110,6 +111,18 @@ def _call_llm(report_text: str) -> dict[str, Any]:
 
     try:
         parsed = json.loads(raw)
+        if "parameters" in parsed:
+            parsed["parameters"] = [
+        {
+            "name": p[0],
+            "value": p[1],
+            "unit": p[2],
+            "reference_low": p[3],
+            "reference_high": p[4],
+            "status": p[5],
+        }
+        for p in parsed["parameters"]
+        ]
         logger.info("Groq extraction successful — %d parameters found.", len(parsed.get("parameters", [])))
         return parsed
     except json.JSONDecodeError as exc:

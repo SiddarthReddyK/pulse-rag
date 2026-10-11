@@ -73,9 +73,9 @@ def get_settings() -> Settings:
             )
         ),
         max_file_size_mb=int(os.getenv("MAX_FILE_SIZE_MB", "10")),
-        llm_model=os.getenv("LLM_MODEL", "llama-3.3-70b-versatile"),
+        llm_model=os.getenv("LLM_MODEL", "qwen/qwen3.8-27b"),
         vision_model=os.getenv(
-            "VISION_MODEL", "meta-llama/llama-4-maverick-17b-128e-instruct"
+            "VISION_MODEL", "qwen/qwen3.8-27b"
         ),
         embedding_provider=os.getenv("EMBEDDING_PROVIDER", "fastembed").lower(),
         embedding_model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5"),

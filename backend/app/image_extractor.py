@@ -39,10 +39,11 @@ def _load_vision_llm() -> ChatGroq:
             "https://console.groq.com and add it to backend/.env"
         )
     return ChatGroq(
-        model=settings.vision_model,
-        temperature=0.0,
-        api_key=settings.groq_api_key,
-    )
+    model=settings.vision_model,
+    temperature=0.0,
+    max_tokens=900,
+    api_key=settings.groq_api_key,
+)
 
 
 def extract_text_from_image(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
@@ -68,7 +69,7 @@ def extract_text_from_image(image_bytes: bytes, mime_type: str = "image/jpeg") -
     image_url = f"data:{mime_type};base64,{b64_image}"
 
     logger.info("Sending image to Groq vision model (%s, %d KB).",
-                VISION_MODEL, len(image_bytes) // 1024)
+                get_settings().vision_model, len(image_bytes) // 1024)
 
     try:
         llm = _load_vision_llm()

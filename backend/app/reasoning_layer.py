@@ -274,7 +274,12 @@ class LabReportReasoningAgent:
                     "GROQ_API_KEY is not set. Get a free key at "
                     "https://console.groq.com and add it to backend/.env"
                 )
-            llm = ChatGroq(model=model, temperature=temperature, api_key=api_key)
+            llm = ChatGroq(
+            model=model,
+            temperature=temperature,
+            max_tokens=900,
+            api_key=api_key,
+            )
 
         self._llm = llm
         self.rag = rag or RAGPipeline()
