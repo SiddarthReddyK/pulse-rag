@@ -1,49 +1,49 @@
 """
-reasoning_layer.py  (Production)
-----------------------------------
-AI Reasoning Layer for the AI Health Insight Companion.
+reasoning_layer.py
+------------------
+AI reasoning layer for Pulse RAG.
 
 Responsibilities:
-  - Load OPENAI_API_KEY from environment; raise RuntimeError if missing.
-  - Accept a structured lab report JSON (agreed schema — unchanged).
-  - Identify abnormal parameters (status: "High" | "Low").
-  - Query FAISS RAG pipeline using abnormal parameter names.
-  - Build a single, focused LLM prompt with patient data + retrieved context.
-  - Call ChatOpenAI once and return a strictly structured JSON response.
+  - Accept a structured, classified lab report (dict).
+  - Retrieve relevant medical context for abnormal parameters (FAISS RAG).
+  - Build a focused prompt and call the Groq LLM once.
+  - Return a strictly structured, patient-friendly response.
 
-Output schema (unchanged):
+Output schema:
     {
-      "summary": str,                    # 4–6 sentences, mentions specific values
+      "summary":             str,        # short key points, specific values
+      "intellectual_audio":  str,        # plain paragraph meant to be spoken
       "preventive_guidance": str,        # lifestyle-only, non-diagnostic
-      "doctor_questions": [str, str, str]  # exactly 3
+      "doctor_questions":    [str, str, str]   # exactly 3
     }
 
+Privacy: the patient's name is deliberately NOT sent to the LLM. It is not
+needed to explain lab values.
+
 Usage:
-    from reasoning_layer import LabReportReasoningAgent
+    from app.reasoning_layer import LabReportReasoningAgent
 
     agent = LabReportReasoningAgent()
-    result = agent.analyze(lab_report_json)
+    result = agent.analyze(classified_report, language="English")
 """
 
 import json
 import logging
-import os
-from typing import Any
+from typing import Any, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
 
-from rag_pipeline import RAGPipeline
+from app.config import get_settings
+from app.rag_pipeline import RAGPipeline
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger("LabReasoningAgent")
+logger = logging.getLogger(__name__)
+
+_FALLBACK_QUESTIONS = [
+    "Which of my results require attention first?",
+    "What lifestyle changes do you recommend based on my results?",
+    "When should I repeat these tests?",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +57,7 @@ Your job is to help patients understand their lab report results — NOT to diag
 STRICT RULES:
 1. Use cautious language: "may suggest", "could indicate", "sometimes associated with".
 2. NEVER diagnose a condition. NEVER name a specific disease as a confirmed finding.
-3. NEVER halucinate — only comment on parameters explicitly provided.
+3. NEVER hallucinate — only comment on parameters explicitly provided.
 4. Mention each abnormal parameter by name AND its actual measured value.
 5. Preventive guidance must be lifestyle-only: diet, exercise, hydration, sleep, stress.
 6. Do NOT recommend specific medications or supplements by brand name.
@@ -71,8 +71,7 @@ STRICT RULES:
 """
 
 _USER_PROMPT_TEMPLATE = """\
-=== PATIENT INFORMATION ===
-Name            : {patient_name}
+=== REPORT INFORMATION ===
 Report Date     : {report_date}
 Target Language : {language}
 
@@ -209,12 +208,22 @@ def _parse_llm_output(raw: str) -> dict[str, Any]:
     else:
         preventive_text = str(preventive_data)
 
-    # Enforce output schema — trim doctor_questions to exactly 3
+    # Enforce output schema — exactly 3 doctor questions
+    questions = parsed.get("doctor_questions", [])
+    if not isinstance(questions, list):
+        questions = []
+    questions = [str(q) for q in questions if str(q).strip()][:3]
+    for fallback in _FALLBACK_QUESTIONS:
+        if len(questions) >= 3:
+            break
+        if fallback not in questions:
+            questions.append(fallback)
+
     return {
         "summary":              summary_text,
         "intellectual_audio":   intellectual_audio,
         "preventive_guidance":  preventive_text,
-        "doctor_questions":     parsed.get("doctor_questions", [])[:3],
+        "doctor_questions":     questions,
     }
 
 
@@ -224,99 +233,65 @@ def _parse_llm_output(raw: str) -> dict[str, Any]:
 
 class LabReportReasoningAgent:
     """
-    Production reasoning agent for lab report analysis.
+    Reasoning agent for lab report analysis.
 
     Workflow
     --------
-    1. Validate OPENAI_API_KEY is set (raises RuntimeError otherwise).
-    2. Build FAISS RAG index from the medical knowledge base.
-    3. On analyze():
-       a. Identify abnormal parameters from the report JSON.
-       b. Build a retrieval query from abnormal parameter names.
-       c. Retrieve top-k relevant document chunks from FAISS.
-       d. Log retrieved snippets for debugging.
-       e. Format the full LLM prompt (system + user).
-       f. Call ChatOpenAI once (single completion).
-       g. Parse and return the structured JSON response.
+    1. Validate that GROQ_API_KEY is set (raises RuntimeError otherwise).
+    2. Build the FAISS RAG index from the medical knowledge base.
+    3. On ``analyze()``:
+       a. Find abnormal parameters in the classified report.
+       b. Retrieve relevant knowledge-base chunks for each one.
+       c. Build the prompt (system + user) and call the LLM once.
+       d. Parse and return the structured response.
 
     Parameters
     ----------
-    knowledge_file : str
-        Path to the plain-text medical knowledge base.
-    model : str
-        OpenAI chat model to use (default: "gpt-4o-mini").
+    model : str | None
+        Groq chat model (default: ``LLM_MODEL`` from configuration).
     temperature : float
-        Sampling temperature — lower is more deterministic (default: 0.2).
-    top_k : int
-        Number of RAG document chunks to retrieve per analysis (default: 5).
+        Sampling temperature. Lower is more deterministic (default 0.2).
+    rag : RAGPipeline | None
+        Inject a prebuilt pipeline (used in tests).
+    llm : Any | None
+        Inject a chat model exposing ``invoke(messages)`` (used in tests).
     """
 
     def __init__(
         self,
-        knowledge_file: str = "medical_knowledge.txt",
-        model: str = "llama-3.3-70b-versatile",
+        model: Optional[str] = None,
         temperature: float = 0.2,
-        top_k: int = 5,
+        rag: Optional[RAGPipeline] = None,
+        llm: Any = None,
     ) -> None:
-        # ── API key validation (fail fast) ──────────────────────────────────
-        api_key = os.getenv("GROQ_API_KEY", "").strip()
-        if not api_key:
-            raise RuntimeError(
-                "GROQ_API_KEY is not set. "
-                "Get a free key at https://console.groq.com then run:\n"
-                "  Windows : set GROQ_API_KEY=gsk_...\n"
-                "  macOS   : export GROQ_API_KEY=gsk_..."
-            )
+        settings = get_settings()
+        model = model or settings.llm_model
 
-        # ── RAG pipeline (uses fast local embeddings — no OpenAI key needed) ──
-        self.rag = RAGPipeline(
-            knowledge_file=knowledge_file,
-            top_k=top_k,
-            use_mock_embeddings=True,           # Groq mode: local FAISS embeddings
-        )
+        if llm is None:
+            api_key = settings.groq_api_key
+            if not api_key:
+                raise RuntimeError(
+                    "GROQ_API_KEY is not set. Get a free key at "
+                    "https://console.groq.com and add it to backend/.env"
+                )
+            llm = ChatGroq(model=model, temperature=temperature, api_key=api_key)
 
-        # ── LLM ─────────────────────────────────────────────────────────────
-        self._llm = ChatGroq(
-            model=model,
-            temperature=temperature,
-            api_key=api_key,
-        )
-
-        logger.info("LabReportReasoningAgent ready | model=%s | top_k=%d", model, top_k)
+        self._llm = llm
+        self.rag = rag or RAGPipeline()
+        logger.info("LabReportReasoningAgent ready | model=%s", model)
 
     # ──────────────────────────────────────────────────────────────────────
     # Private helpers
     # ──────────────────────────────────────────────────────────────────────
 
     def _retrieve_context(self, parameters: list[dict]) -> str:
-        """
-        Build a single retrieval query from all abnormal parameter names,
-        fetch top_k chunks from FAISS, log each snippet, and return
-        the concatenated context string.
-        """
-        abnormal = [p for p in parameters if p.get("status") in ("High", "Low")]
-
-        if not abnormal:
+        """Retrieve de-duplicated knowledge-base context for abnormal parameters."""
+        if not any(p.get("status") in ("High", "Low") for p in parameters):
             logger.info("No abnormal parameters — skipping RAG retrieval.")
-            return "All lab parameters are within their reference ranges."
-
-        # Single composite query from all abnormal parameter names
-        query = " ".join(p["name"] for p in abnormal)
-        logger.info("RAG query: '%s'", query)
-
-        docs = self.rag._vector_store.similarity_search(query, k=self.rag.top_k)
-
-        logger.debug("── Retrieved document snippets ──────────────────────")
-        for i, doc in enumerate(docs, start=1):
-            snippet = doc.page_content[:120].replace("\n", " ")
-            logger.debug("  [%d] %s…", i, snippet)
-        logger.debug("─────────────────────────────────────────────────────")
-
-        return "\n\n".join(doc.page_content for doc in docs)
+        return self.rag.retrieve_for_abnormal_params(parameters)
 
     def _build_prompt(
         self,
-        patient_name: str,
         report_date: str,
         parameters: list[dict],
         rag_context: str,
@@ -329,7 +304,6 @@ class LabReportReasoningAgent:
         abnormal_summary = _build_abnormal_summary(parameters)
 
         user_content = _USER_PROMPT_TEMPLATE.format(
-            patient_name     = patient_name,
             report_date      = report_date,
             language         = language,
             results_table    = results_table,
@@ -350,7 +324,7 @@ class LabReportReasoningAgent:
         """
         Analyse a structured lab report JSON.
 
-        Input schema (unchanged):
+        Input schema:
             {
               "patient_name": str,
               "report_date":  str,
@@ -368,21 +342,23 @@ class LabReportReasoningAgent:
 
         Returns:
             {
-              "summary":             str,   # 4–6 sentences, specific values mentioned
-              "preventive_guidance": str,   # lifestyle-only guidance
-              "doctor_questions":    list[str]  # exactly 3
+              "summary":             str,
+              "intellectual_audio":  str,
+              "preventive_guidance": str,        # lifestyle-only guidance
+              "doctor_questions":    list[str]   # exactly 3
             }
         """
-        patient_name: str       = report.get("patient_name", "Patient")
         report_date:  str       = report.get("report_date",  "N/A")
         parameters:   list[dict]= report.get("parameters",   [])
 
         # ── Edge case: empty report ──────────────────────────────────────
         if not parameters:
             logger.warning("No parameters found in report.")
+            message = "No lab parameters were found in this report."
             return {
-                "summary":            "No lab parameters were found in this report.",
-                "preventive_guidance":"Please consult your doctor with a complete lab report.",
+                "summary":             message,
+                "intellectual_audio":  message,
+                "preventive_guidance": "Please consult your doctor with a complete lab report.",
                 "doctor_questions": [
                     "What lab tests should I have done based on my symptoms?",
                     "What reference ranges apply to someone my age and gender?",
@@ -394,7 +370,7 @@ class LabReportReasoningAgent:
         rag_context = self._retrieve_context(parameters)
 
         # ── Step 2: Build prompt ──────────────────────────────────────────
-        messages = self._build_prompt(patient_name, report_date, parameters, rag_context, language)
+        messages = self._build_prompt(report_date, parameters, rag_context, language)
         logger.info("Sending request to Groq for language %s…", language)
 
         # ── Step 3: Single LLM call ───────────────────────────────────────
